@@ -79,6 +79,8 @@ app.get('/', (req, res) => {
             'GET /api/users/all',
             'POST /api/auth/register',
             'POST /api/auth/login',
+            'GET /api/profile/:userId',
+            'PUT /api/profile/update',
             'POST /api/ecg/save',
             'GET /api/ecg/history/:userId',
             'DELETE /api/ecg/history/:userId',
@@ -133,6 +135,8 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const { username, password, age, gender } = req.body;
 
+        console.log('📝 Register request received:', { username, age, gender });
+
         // Validation
         if (!username || !password || !age || !gender) {
             return res.status(400).json({
@@ -162,6 +166,8 @@ app.post('/api/auth/register', async (req, res) => {
             [username, password, age, gender]
         );
 
+        console.log('✅ User registered successfully:', result.rows[0]);
+
         res.status(201).json({
             success: true,
             message: 'User berhasil didaftarkan',
@@ -169,7 +175,7 @@ app.post('/api/auth/register', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Register error:', error);
+        console.error('❌ Register error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error during registration',
@@ -192,6 +198,8 @@ app.post('/api/auth/login', async (req, res) => {
     let client;
     try {
         const { username, password } = req.body;
+
+        console.log('🔐 Login request received for username:', username);
 
         if (!username || !password) {
             return res.status(400).json({
@@ -218,6 +226,8 @@ app.post('/api/auth/login', async (req, res) => {
         const user = result.rows[0];
         const token = `token_${user.id}_${Date.now()}`;
 
+        console.log('✅ Login successful for user:', user.username);
+
         res.json({
             success: true,
             message: 'Login berhasil',
@@ -231,7 +241,7 @@ app.post('/api/auth/login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('❌ Login error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error during login',
@@ -265,6 +275,8 @@ app.get('/api/users/all', async (req, res) => {
             'SELECT id, username, password, age, gender, created_at, updated_at FROM users ORDER BY created_at DESC'
         );
 
+        console.log('📊 Retrieved all users, count:', result.rows.length);
+
         res.json({
             success: true,
             message: 'Users retrieved successfully',
@@ -273,7 +285,7 @@ app.get('/api/users/all', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Get all users error:', error);
+        console.error('❌ Get all users error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error while fetching users',
@@ -302,6 +314,9 @@ app.get('/api/profile/:userId', async (req, res) => {
     let client;
     try {
         const { userId } = req.params;
+        
+        console.log('👤 Profile request received for userId:', userId);
+
         client = await pool.connect();
 
         const result = await client.query(
@@ -316,6 +331,8 @@ app.get('/api/profile/:userId', async (req, res) => {
             });
         }
 
+        console.log('✅ Profile retrieved for user:', result.rows[0].username);
+
         res.json({
             success: true,
             message: 'Profile retrieved successfully',
@@ -323,7 +340,7 @@ app.get('/api/profile/:userId', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Get profile error:', error);
+        console.error('❌ Get profile error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error while fetching profile',
@@ -334,7 +351,7 @@ app.get('/api/profile/:userId', async (req, res) => {
     }
 });
 
-// Update profile
+// Update profile - ENHANCED VERSION
 app.put('/api/profile/update', async (req, res) => {
     if (!pool) {
         return res.status(500).json({
@@ -345,59 +362,117 @@ app.put('/api/profile/update', async (req, res) => {
 
     let client;
     try {
-        const { userId, username, age, gender, password } = req.body;
+        const { userId, username, age, gender, oldPassword, newPassword } = req.body;
 
+        console.log('📝 Profile update request received:', {
+            userId,
+            username,
+            age,
+            gender,
+            hasOldPassword: !!oldPassword,
+            hasNewPassword: !!newPassword
+        });
+
+        // Validation
         if (!userId || !username || !age || !gender) {
             return res.status(400).json({
                 success: false,
-                message: 'All fields are required'
+                message: 'User ID, username, age, and gender are required'
             });
         }
 
         client = await pool.connect();
 
-        // Check username exists
-        const existingUser = await client.query(
-            'SELECT id FROM users WHERE username = $1 AND id != $2',
-            [username, userId]
+        // Check if user exists
+        const userCheck = await client.query(
+            'SELECT * FROM users WHERE id = $1',
+            [userId]
         );
 
-        if (existingUser.rows.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Username already exists'
-            });
-        }
-
-        // Update user
-        let query, params;
-        if (password) {
-            query = `UPDATE users SET username = $1, age = $2, gender = $3, password = $4, updated_at = CURRENT_DATE 
-                     WHERE id = $5 RETURNING id, username, age, gender, updated_at`;
-            params = [username, age, gender, password, userId];
-        } else {
-            query = `UPDATE users SET username = $1, age = $2, gender = $3, updated_at = CURRENT_DATE 
-                     WHERE id = $4 RETURNING id, username, age, gender, updated_at`;
-            params = [username, age, gender, userId];
-        }
-
-        const result = await client.query(query, params);
-
-        if (result.rows.length === 0) {
+        if (userCheck.rows.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'User not found'
             });
         }
 
+        const currentUser = userCheck.rows[0];
+
+        // If password change is requested, validate old password
+        if (oldPassword && newPassword) {
+            if (currentUser.password !== oldPassword) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Old password is incorrect'
+                });
+            }
+        }
+
+        // Check if username already exists (excluding current user)
+        const usernameCheck = await client.query(
+            'SELECT id FROM users WHERE username = $1 AND id != $2',
+            [username, userId]
+        );
+
+        if (usernameCheck.rows.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Username already exists'
+            });
+        }
+
+        // Update user profile
+        let updateQuery;
+        let updateParams;
+
+        if (oldPassword && newPassword) {
+            // Update with password change
+            updateQuery = `
+                UPDATE users 
+                SET username = $1, age = $2, gender = $3, password = $4, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = $5 
+                RETURNING id, username, age, gender, updated_at
+            `;
+            updateParams = [username, age, gender, newPassword, userId];
+        } else {
+            // Update without password change
+            updateQuery = `
+                UPDATE users 
+                SET username = $1, age = $2, gender = $3, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = $4 
+                RETURNING id, username, age, gender, updated_at
+            `;
+            updateParams = [username, age, gender, userId];
+        }
+
+        const updateResult = await client.query(updateQuery, updateParams);
+
+        if (updateResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Failed to update user profile'
+            });
+        }
+
+        const updatedUser = updateResult.rows[0];
+
+        console.log('✅ Profile updated successfully for user:', updatedUser.username);
+
+        // Return success response
         res.json({
             success: true,
             message: 'Profile updated successfully',
-            user: result.rows[0]
+            user: {
+                id: updatedUser.id,
+                username: updatedUser.username,
+                age: updatedUser.age,
+                gender: updatedUser.gender,
+                updatedAt: updatedUser.updated_at
+            }
         });
 
     } catch (error) {
-        console.error('Update profile error:', error);
+        console.error('❌ Error updating profile:', error);
         res.status(500).json({
             success: false,
             message: 'Server error while updating profile',
@@ -424,6 +499,8 @@ app.post('/api/ecg/save', async (req, res) => {
     let client;
     try {
         const { userId, username, bpm } = req.body;
+
+        console.log('💓 ECG save request received:', { userId, username, bpm });
 
         if (!userId || !username || !bpm) {
             return res.status(400).json({
@@ -457,6 +534,8 @@ app.post('/api/ecg/save', async (req, res) => {
             [userId, username, waktu, bpm, status, kondisi]
         );
 
+        console.log('✅ ECG result saved successfully:', result.rows[0]);
+
         res.status(201).json({
             success: true,
             message: 'ECG result saved successfully',
@@ -464,7 +543,7 @@ app.post('/api/ecg/save', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Save ECG error:', error);
+        console.error('❌ Save ECG error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error while saving ECG result',
@@ -489,12 +568,17 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
     let client;
     try {
         const { userId } = req.params;
+        
+        console.log('📊 ECG history request received for userId:', userId);
+
         client = await pool.connect();
 
         const result = await client.query(
             'SELECT * FROM ecg_results WHERE user_id = $1 ORDER BY tanggal DESC, waktu DESC',
             [userId]
         );
+
+        console.log('✅ ECG history retrieved:', result.rows.length, 'records');
 
         res.json({
             success: true,
@@ -504,7 +588,7 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Get ECG history error:', error);
+        console.error('❌ Get ECG history error:', error);
         res.status(500).json({
             success: false,
             message: 'Server error while fetching ECG history',
@@ -517,7 +601,7 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
     }
 });
 
-// FIXED: NEW - Delete all ECG history for a user
+// Delete all ECG history for a user
 app.delete('/api/ecg/history/:userId', async (req, res) => {
     if (!pool) {
         return res.status(500).json({
@@ -530,7 +614,7 @@ app.delete('/api/ecg/history/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         
-        console.log(`🗑️ DELETE request received for user history, userId: ${userId}`);
+        console.log('🗑️ DELETE request received for user history, userId:', userId);
         
         // Validate userId
         if (!userId || isNaN(userId)) {
@@ -562,7 +646,7 @@ app.delete('/api/ecg/history/:userId', async (req, res) => {
         const deleteQuery = 'DELETE FROM ecg_results WHERE user_id = $1';
         const deleteResult = await client.query(deleteQuery, [userId]);
 
-        console.log(`✅ Deleted ${deleteResult.rowCount} ECG records for user ${userId}`);
+        console.log('✅ Deleted', deleteResult.rowCount, 'ECG records for user', userId);
 
         // Return success response
         res.status(200).json({
@@ -586,7 +670,7 @@ app.delete('/api/ecg/history/:userId', async (req, res) => {
     }
 });
 
-// FIXED: NEW - Delete specific ECG record
+// Delete specific ECG record
 app.delete('/api/ecg/history/:userId/:id', async (req, res) => {
     if (!pool) {
         return res.status(500).json({
@@ -599,7 +683,7 @@ app.delete('/api/ecg/history/:userId/:id', async (req, res) => {
     try {
         const { userId, id } = req.params;
         
-        console.log(`🗑️ DELETE request received for specific ECG record, userId: ${userId}, recordId: ${id}`);
+        console.log('🗑️ DELETE request received for specific ECG record, userId:', userId, 'recordId:', id);
         
         // Validate parameters
         if (!userId || isNaN(userId) || !id || isNaN(id)) {
@@ -626,7 +710,7 @@ app.delete('/api/ecg/history/:userId/:id', async (req, res) => {
         const deleteQuery = 'DELETE FROM ecg_results WHERE id = $1 AND user_id = $2';
         const deleteResult = await client.query(deleteQuery, [id, userId]);
 
-        console.log(`✅ Deleted ECG record ${id} for user ${userId}`);
+        console.log('✅ Deleted ECG record', id, 'for user', userId);
 
         // Return success response
         res.status(200).json({
@@ -666,6 +750,8 @@ app.use('*', (req, res) => {
             'GET /api/users/all',
             'POST /api/auth/register',
             'POST /api/auth/login',
+            'GET /api/profile/:userId',
+            'PUT /api/profile/update',
             'POST /api/ecg/save',
             'GET /api/ecg/history/:userId',
             'DELETE /api/ecg/history/:userId',
@@ -676,7 +762,7 @@ app.use('*', (req, res) => {
 
 // Error handler
 app.use((error, req, res, next) => {
-    console.error('Unhandled error:', error);
+    console.error('❌ Unhandled error:', error);
     res.status(500).json({
         success: false,
         message: 'Internal server error',
@@ -701,6 +787,7 @@ const server = app.listen(PORT, '0.0.0.0', (err) => {
     console.log(`🌐 Host: 0.0.0.0`);
     console.log(`🗄️ Database: ${databaseStatus}`);
     console.log(`✅ Server ready for connections`);
+    console.log(`🔗 Base URL: https://ecg-heartbeat-api-production.up.railway.app`);
 });
 
 // Handle server errors
