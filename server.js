@@ -79,7 +79,10 @@ app.get('/', (req, res) => {
             'GET /api/users/all',
             'POST /api/auth/register',
             'POST /api/auth/login',
-            'POST /api/ecg/save'
+            'POST /api/ecg/save',
+            'GET /api/ecg/history/:userId',
+            'DELETE /api/ecg/history/:userId',
+            'DELETE /api/ecg/history/:userId/:id'
         ]
     });
 });
@@ -433,13 +436,13 @@ app.post('/api/ecg/save', async (req, res) => {
         let status, kondisi;
         if (bpm < 60) {
             status = 'Abnormal';
-            kondisi = 'Bradikardia - detak jantung rendah (<60 BPM)';
+            kondisi = 'Bradikardia';
         } else if (bpm > 100) {
             status = 'Abnormal';
-            kondisi = 'Takikardia - detak jantung tinggi (>100 BPM)';
+            kondisi = 'Takikardia';
         } else {
             status = 'Normal';
-            kondisi = 'Detak jantung dalam rentang normal (60-100 BPM)';
+            kondisi = 'Normal';
         }
 
         const now = new Date();
@@ -478,7 +481,7 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
         return res.status(500).json({
             success: false,
             message: 'Database not configured',
-            data: [],
+            history: [],
             count: 0
         });
     }
@@ -496,7 +499,7 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
         res.json({
             success: true,
             message: 'ECG history retrieved successfully',
-            data: result.rows,
+            history: result.rows,
             count: result.rows.length
         });
 
@@ -505,8 +508,140 @@ app.get('/api/ecg/history/:userId', async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Server error while fetching ECG history',
-            data: [],
+            history: [],
             count: 0,
+            debug: error.message
+        });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+// FIXED: NEW - Delete all ECG history for a user
+app.delete('/api/ecg/history/:userId', async (req, res) => {
+    if (!pool) {
+        return res.status(500).json({
+            success: false,
+            message: 'Database not configured'
+        });
+    }
+
+    let client;
+    try {
+        const { userId } = req.params;
+        
+        console.log(`🗑️ DELETE request received for user history, userId: ${userId}`);
+        
+        // Validate userId
+        if (!userId || isNaN(userId)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid user ID'
+            });
+        }
+
+        client = await pool.connect();
+
+        // Check if user exists
+        const userCheckQuery = 'SELECT id FROM users WHERE id = $1';
+        const userCheckResult = await client.query(userCheckQuery, [userId]);
+        
+        if (userCheckResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        // Get count of records to be deleted (for logging)
+        const countQuery = 'SELECT COUNT(*) FROM ecg_results WHERE user_id = $1';
+        const countResult = await client.query(countQuery, [userId]);
+        const recordCount = countResult.rows[0].count;
+
+        // Delete all ECG history for the user
+        const deleteQuery = 'DELETE FROM ecg_results WHERE user_id = $1';
+        const deleteResult = await client.query(deleteQuery, [userId]);
+
+        console.log(`✅ Deleted ${deleteResult.rowCount} ECG records for user ${userId}`);
+
+        // Return success response
+        res.status(200).json({
+            success: true,
+            message: `Successfully deleted ${deleteResult.rowCount} ECG records`,
+            deletedCount: deleteResult.rowCount,
+            userId: parseInt(userId),
+            previousCount: parseInt(recordCount)
+        });
+
+    } catch (error) {
+        console.error('❌ Error deleting user history:', error);
+        
+        res.status(500).json({
+            success: false,
+            message: 'Server error while deleting ECG history',
+            debug: error.message
+        });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+// FIXED: NEW - Delete specific ECG record
+app.delete('/api/ecg/history/:userId/:id', async (req, res) => {
+    if (!pool) {
+        return res.status(500).json({
+            success: false,
+            message: 'Database not configured'
+        });
+    }
+
+    let client;
+    try {
+        const { userId, id } = req.params;
+        
+        console.log(`🗑️ DELETE request received for specific ECG record, userId: ${userId}, recordId: ${id}`);
+        
+        // Validate parameters
+        if (!userId || isNaN(userId) || !id || isNaN(id)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid user ID or record ID'
+            });
+        }
+
+        client = await pool.connect();
+
+        // Check if record exists and belongs to user
+        const checkQuery = 'SELECT id FROM ecg_results WHERE id = $1 AND user_id = $2';
+        const checkResult = await client.query(checkQuery, [id, userId]);
+        
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'ECG record not found or does not belong to user'
+            });
+        }
+
+        // Delete the specific record
+        const deleteQuery = 'DELETE FROM ecg_results WHERE id = $1 AND user_id = $2';
+        const deleteResult = await client.query(deleteQuery, [id, userId]);
+
+        console.log(`✅ Deleted ECG record ${id} for user ${userId}`);
+
+        // Return success response
+        res.status(200).json({
+            success: true,
+            message: `Successfully deleted ECG record`,
+            deletedRecordId: parseInt(id),
+            userId: parseInt(userId)
+        });
+
+    } catch (error) {
+        console.error('❌ Error deleting specific ECG record:', error);
+        
+        res.status(500).json({
+            success: false,
+            message: 'Server error while deleting ECG record',
             debug: error.message
         });
     } finally {
@@ -530,7 +665,11 @@ app.use('*', (req, res) => {
             'GET /health',
             'GET /api/users/all',
             'POST /api/auth/register',
-            'POST /api/auth/login'
+            'POST /api/auth/login',
+            'POST /api/ecg/save',
+            'GET /api/ecg/history/:userId',
+            'DELETE /api/ecg/history/:userId',
+            'DELETE /api/ecg/history/:userId/:id'
         ]
     });
 });
