@@ -7,49 +7,40 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple test endpoint - NO DATABASE
+// Debug port info
+console.log('🔍 PORT DEBUG:');
+console.log('process.env.PORT:', process.env.PORT);
+console.log('Default fallback port: 3000');
+
+// Simple test endpoint
 app.get('/api/test', (req, res) => {
-    try {
-        res.json({
-            message: 'Simple API is working!',
-            timestamp: new Date().toISOString(),
-            status: 'success',
-            version: '1.0.0',
-            port: process.env.PORT || 'not set'
-        });
-    } catch (error) {
-        console.error('Test endpoint error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error in test endpoint',
-            error: error.message
-        });
-    }
+    res.json({
+        message: 'ECG Heartbeat API is working!',
+        timestamp: new Date().toISOString(),
+        status: 'success',
+        version: '1.0.0',
+        port: {
+            env_port: process.env.PORT,
+            listening_port: PORT
+        }
+    });
 });
 
-// Health check - NO DATABASE
+// Health check
 app.get('/health', (req, res) => {
-    try {
-        res.json({
-            status: 'OK',
-            uptime: process.uptime(),
-            timestamp: new Date().toISOString(),
-            message: 'Server is healthy'
-        });
-    } catch (error) {
-        console.error('Health check error:', error);
-        res.status(500).json({
-            status: 'ERROR',
-            message: 'Health check failed',
-            error: error.message
-        });
-    }
+    res.json({
+        status: 'OK',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        port: PORT
+    });
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
     res.json({
-        message: 'ECG Heartbeat API is running!',
+        message: 'ECG Heartbeat API',
+        status: 'running',
         endpoints: [
             'GET /api/test',
             'GET /health'
@@ -62,38 +53,48 @@ app.use('*', (req, res) => {
     res.status(404).json({
         success: false,
         message: 'Endpoint not found',
-        path: req.originalUrl,
-        available_endpoints: ['/', '/api/test', '/health']
+        path: req.originalUrl
     });
 });
 
-// Error handler
-app.use((error, req, res, next) => {
-    console.error('Unhandled error:', error);
-    res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: error.message
-    });
-});
-
-// Start server
+// CRITICAL: Railway port configuration
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Simple ECG API running on port ${PORT}`);
-    console.log(`📍 Test URL: http://localhost:${PORT}/api/test`);
-    console.log(`🏥 Health Check: http://localhost:${PORT}/health`);
-    console.log(`📱 Server ready and listening on 0.0.0.0:${PORT}`);
+// IMPORTANT: Listen on 0.0.0.0 for Railway
+const server = app.listen(PORT, '0.0.0.0', (err) => {
+    if (err) {
+        console.error('❌ Server failed to start:', err);
+        process.exit(1);
+    }
+    
+    console.log(`🚀 ECG Heartbeat API started successfully`);
+    console.log(`📍 Port: ${PORT}`);
+    console.log(`🌐 Host: 0.0.0.0`);
+    console.log(`✅ Server ready for connections`);
+});
+
+// Handle server errors
+server.on('error', (err) => {
+    console.error('❌ Server error:', err);
+    if (err.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use`);
+    }
+    process.exit(1);
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('🛑 Received SIGINT, shutting down gracefully');
-    process.exit(0);
+    console.log('🛑 Received SIGINT');
+    server.close(() => {
+        console.log('✅ Server closed gracefully');
+        process.exit(0);
+    });
 });
 
 process.on('SIGTERM', () => {
-    console.log('🛑 Received SIGTERM, shutting down gracefully');
-    process.exit(0);
+    console.log('🛑 Received SIGTERM');
+    server.close(() => {
+        console.log('✅ Server closed gracefully');
+        process.exit(0);
+    });
 });
